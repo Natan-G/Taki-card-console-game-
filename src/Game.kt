@@ -40,6 +40,19 @@ class Game {
         return card
     }
 
+    private data class TakiState(
+        var currentPlayer: Player,
+        var color: CardColor,
+        var isActive: Boolean = true,
+        var lastPlayedNumber: Int? = null,
+        var lastPlayedCard: Card? = null
+    )
+
+    private data class PlusTwoState(
+        var currentPlayer: Player,
+        var drawCount: Int
+    )
+
     fun start() {
         display.showGameStart(currentTopCard)
         while (true) {  // Main game loop
@@ -58,7 +71,7 @@ class Game {
             if (currentPlayer.canPlayCard(currentTopCard)) {
                 val cardToPlay = chooseCardToPlay(currentPlayer)
                 playCard(currentPlayer, cardToPlay)
-            } else {
+            } else { // Player take card from deck
                 display.showDrawCard(currentPlayer.name)
                 currentPlayer.drawCard(deck)
                 currentPlayer.canPlayAgain = false
@@ -76,6 +89,29 @@ class Game {
             if (!currentPlayer.canPlayAgain) {
                 nextTurn()
             }
+        }
+    }
+
+    /**
+     * Moves the game to the next player's turn.
+     * Considers:
+     * - Direction of play (normal/reversed)
+     * - Extra turns (PLUS, KING)
+     * - Skipped turns (STOP)
+     */
+    private fun nextTurn() {
+        val currentPlayer = players[currentPlayerIndex]
+
+        if (currentPlayer.canPlayAgain) {
+            currentPlayer.canPlayAgain = false
+            return // Don't move to the next player yet
+        }
+
+        // Move to next player
+        currentPlayerIndex = if (isDirectionReversed) {
+            (currentPlayerIndex - 1 + players.size) % players.size
+        } else {
+            (currentPlayerIndex + 1) % players.size
         }
     }
 
@@ -185,6 +221,83 @@ class Game {
         }
     }
 
+    private fun skipNextPlayer() {
+        getNextPlayer().isTurnSkipped = true
+    }
+
+    /**
+     * Handles PLUS_2 card chain effect.
+     * Each affected player can either:
+     * - Play another PLUS_2 (increasing draw count)
+     * - Draw the accumulated cards and get their turn
+     * @param startingPlayer The player who played the initial PLUS_2
+     */
+    private fun handlePlusTwoEffect(startingPlayer: Player) {
+        val plusTwoState = PlusTwoState(getNextPlayer(), 2)
+        handlePlusTwoChain(plusTwoState)
+    }
+
+    private fun handlePlusTwoChain(state: PlusTwoState) {
+        while (true) {
+            display.showPlusTwo(state.currentPlayer.name, state.drawCount)
+
+            val plusTwoCards = getPlusTwoCards(state.currentPlayer)
+            if (plusTwoCards.isEmpty()) {
+                drawCardsAndEndChain(state)
+                return
+            }
+
+            // Only show options if player has PLUS_2 cards
+            if (!shouldPlayPlusTwo(state.drawCount)) {
+                drawCardsAndEndChain(state)
+                return
+            }
+
+            val chosenCard = choosePlusTwoCard(plusTwoCards) ?: run {
+                drawCardsAndEndChain(state)
+                return
+            }
+
+            playPlusTwoCard(state, chosenCard)
+        }
+    }
+
+    private fun getPlusTwoCards(player: Player): List<Card> {
+        return player.getHandCards().filter { it.type == CardType.PLUS_2 }
+    }
+
+    private fun drawCardsAndEndChain(state: PlusTwoState) {
+        display.showDrawCards(state.currentPlayer.name, state.drawCount)
+        repeat(state.drawCount) {
+            state.currentPlayer.drawCard(deck)
+        }
+        currentPlayerIndex = players.indexOf(state.currentPlayer)
+    }
+
+    private fun shouldPlayPlusTwo(drawCount: Int): Boolean {
+        display.showPlusTwoOptions(drawCount)
+        return getValidNumericInput(1, 2) == 2
+    }
+
+    private fun choosePlusTwoCard(plusTwoCards: List<Card>): Card? {
+        println("Choose which PLUS_2 card to play:")
+        plusTwoCards.forEachIndexed { index, card ->
+            println("${index + 1}: $card")
+        }
+
+        val choice = getValidNumericInput(1, plusTwoCards.size)
+        return plusTwoCards[choice - 1]
+    }
+
+    private fun playPlusTwoCard(state: PlusTwoState, card: Card) {
+        state.currentPlayer.playCard(card)
+        currentTopCard = card
+        state.drawCount += 2
+        currentPlayerIndex = players.indexOf(state.currentPlayer)
+        state.currentPlayer = getNextPlayer()
+    }
+
+
     private fun handlePlusCard(player: Player) {
         player.canPlayAgain = true
         display.showExtraTurn(player.name)
@@ -199,6 +312,24 @@ class Game {
         allOtherPlayersDraw(3)
         display.showGameState(players, currentTopCard)
         chooseColor()
+    }
+
+    /**
+     * Handles color selection for color-changing cards.
+     * Used by:
+     * - SWITCH_COLOR
+     * - PLUS_3
+     */
+    private fun chooseColor() {
+        val nextPlayer = getNextPlayer()
+        display.showColorChoice(nextPlayer.name)
+
+        val validColors = CardColor.entries.filter { it != CardColor.NONE }
+        val choice = getValidNumericInput(1, validColors.size)
+        val chosenColor = validColors[choice - 1]
+
+        display.showColorChanged(chosenColor)
+        currentTopCard = Card(chosenColor, CardType.SWITCH_COLOR)
     }
 
     /**
@@ -224,13 +355,7 @@ class Game {
         processTakiEndEffects(takiState)
     }
 
-    private data class TakiState(
-        var currentPlayer: Player,
-        var color: CardColor,
-        var isActive: Boolean = true,
-        var lastPlayedNumber: Int? = null,
-        var lastPlayedCard: Card? = null
-    )
+
 
     private fun handleTakiTurn(state: TakiState) {
         display.showTakiTurnStart(state.currentPlayer.name, state.color)
@@ -304,117 +429,13 @@ class Game {
         }
     }
 
-    private fun handleNextTakiPlayer(state: TakiState) {
-        // This function should only be called when TAKI is closed
-        if (!state.isActive) return
-    }
-
     private fun processTakiEndEffects(state: TakiState) {
         state.lastPlayedCard?.let { card ->
             processCardEffects(card, state.currentPlayer)
         }
     }
 
-    /**
-     * Handles PLUS_2 card chain effect.
-     * Each affected player can either:
-     * - Play another PLUS_2 (increasing draw count)
-     * - Draw the accumulated cards and get their turn
-     * @param startingPlayer The player who played the initial PLUS_2
-     */
-    private fun handlePlusTwoEffect(startingPlayer: Player) {
-        val plusTwoState = PlusTwoState(getNextPlayer(), 2)
-        handlePlusTwoChain(plusTwoState)
-    }
-
-    private data class PlusTwoState(
-        var currentPlayer: Player,
-        var drawCount: Int
-    )
-
-    private fun handlePlusTwoChain(state: PlusTwoState) {
-        while (true) {
-            display.showPlusTwo(state.currentPlayer.name, state.drawCount)
-            
-            val plusTwoCards = getPlusTwoCards(state.currentPlayer)
-            if (plusTwoCards.isEmpty()) {
-                drawCardsAndEndChain(state)
-                return
-            }
-
-            // Only show options if player has PLUS_2 cards
-            if (!shouldPlayPlusTwo(state.drawCount)) {
-                drawCardsAndEndChain(state)
-                return
-            }
-
-            val chosenCard = choosePlusTwoCard(plusTwoCards) ?: run {
-                drawCardsAndEndChain(state)
-                return
-            }
-
-            playPlusTwoCard(state, chosenCard)
-        }
-    }
-
-    private fun getPlusTwoCards(player: Player): List<Card> {
-        return player.getHandCards().filter { it.type == CardType.PLUS_2 }
-    }
-
-    private fun shouldPlayPlusTwo(drawCount: Int): Boolean {
-        display.showPlusTwoOptions(drawCount)
-        return getValidNumericInput(1, 2) == 2
-    }
-
-    private fun choosePlusTwoCard(plusTwoCards: List<Card>): Card? {
-        println("Choose which PLUS_2 card to play:")
-        plusTwoCards.forEachIndexed { index, card ->
-            println("${index + 1}: $card")
-        }
-        
-        val choice = getValidNumericInput(1, plusTwoCards.size)
-        return plusTwoCards[choice - 1]
-    }
-
-    private fun playPlusTwoCard(state: PlusTwoState, card: Card) {
-        state.currentPlayer.playCard(card)
-        currentTopCard = card
-        state.drawCount += 2
-        currentPlayerIndex = players.indexOf(state.currentPlayer)
-        state.currentPlayer = getNextPlayer()
-    }
-
-    private fun drawCardsAndEndChain(state: PlusTwoState) {
-        display.showDrawCards(state.currentPlayer.name, state.drawCount)
-        repeat(state.drawCount) {
-            state.currentPlayer.drawCard(deck)
-        }
-        currentPlayerIndex = players.indexOf(state.currentPlayer)
-    }
-
-    private fun skipNextPlayer() {
-        getNextPlayer().isTurnSkipped = true
-    }
-
-    /**
-     * Handles color selection for color-changing cards.
-     * Used by:
-     * - SWITCH_COLOR
-     * - PLUS_3
-     */
-    private fun chooseColor() {
-        val nextPlayer = getNextPlayer()
-        display.showColorChoice(nextPlayer.name)
-        
-        val validColors = CardColor.entries.filter { it != CardColor.NONE }
-        val choice = getValidNumericInput(1, validColors.size)
-        val chosenColor = validColors[choice - 1]
-        
-        display.showColorChanged(chosenColor)
-        currentTopCard = Card(chosenColor, CardType.SWITCH_COLOR)
-    }
-
-    // New helper function to process card effects
+    // helper function to process card effects
     private fun processCardEffects(card: Card, player: Player) {
         when (card.type) {
             CardType.STOP -> skipNextPlayer()
@@ -494,29 +515,6 @@ class Game {
     }
 
     /**
-     * Moves the game to the next player's turn.
-     * Considers:
-     * - Direction of play (normal/reversed)
-     * - Extra turns (PLUS, KING)
-     * - Skipped turns (STOP)
-     */
-    private fun nextTurn() {
-        val currentPlayer = players[currentPlayerIndex]
-        
-        if (currentPlayer.canPlayAgain) {
-            currentPlayer.canPlayAgain = false
-            return // Don't move to the next player yet
-        }
-
-        // Move to next player
-        currentPlayerIndex = if (isDirectionReversed) {
-            (currentPlayerIndex - 1 + players.size) % players.size
-        } else {
-            (currentPlayerIndex + 1) % players.size
-        }
-    }
-
-    /**
      * Gets the next player in turn order.
      * Considers direction (normal/reversed).
      */
@@ -566,7 +564,6 @@ class Game {
             display.showError("Please enter a number between 1 and ${validCards.size}.")
             return null
         }
-
         return validCards[input - 1]
     }
 
