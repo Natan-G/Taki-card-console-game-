@@ -45,7 +45,6 @@ class Deck {
         cards.shuffle()
     }
 
-
     fun drawCard(): Card? {
         if (cards.isEmpty() && discardPile.isNotEmpty()) {
             println("Reshuffling discard pile into deck...")
