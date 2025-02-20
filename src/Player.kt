@@ -53,7 +53,6 @@ class Player(val name: String) {
         }
     }
 
-
     // Check if the player has won
     fun hasWon(): Boolean {
         return handCards.isEmpty()
